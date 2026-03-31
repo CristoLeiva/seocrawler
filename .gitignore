@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.csv
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!dashboard/tsconfig.json
+!dashboard/tsconfig.app.json
+!dashboard/tsconfig.node.json
+!dashboard/vite.config.ts
+dashboard/node_modules/
+dashboard/dist/
+dashboard/public/sample-report.json

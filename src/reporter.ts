@@ -19,6 +19,7 @@ export function buildSummary(pages: PageResult[], duration: number): CrawlSummar
     warnings: allIssues.filter((i) => i.severity === 'warning').length,
     infos: allIssues.filter((i) => i.severity === 'info').length,
     issuesByType,
+    crossPageIssues: [],
     pages,
     duration,
   };
@@ -37,6 +38,19 @@ export function printReport(summary: CrawlSummary): void {
   console.log(`    ${chalk.red('Errors:')}      ${summary.errors}`);
   console.log(`    ${chalk.yellow('Warnings:')}    ${summary.warnings}`);
   console.log(`    ${chalk.blue('Info:')}         ${summary.infos}`);
+
+  // Indexability
+  const indexable = summary.pages.filter((p) => p.indexability === 'indexable').length;
+  const nonIndexable = summary.pages.filter((p) => p.indexability === 'non-indexable');
+  console.log(`  Indexable:      ${chalk.green(String(indexable))} | Non-indexable: ${nonIndexable.length > 0 ? chalk.red(String(nonIndexable.length)) : '0'}`);
+  if (nonIndexable.length > 0) {
+    for (const page of nonIndexable.slice(0, 5)) {
+      console.log(`    ${chalk.red('✗')} ${page.url} — ${page.indexabilityReason}`);
+    }
+    if (nonIndexable.length > 5) {
+      console.log(`    ${chalk.gray(`... and ${nonIndexable.length - 5} more`)}`);
+    }
+  }
   console.log();
 
   // Top issues by frequency
@@ -106,14 +120,128 @@ export function printReport(summary: CrawlSummary): void {
     console.log(`  Slow (>1.5s):  ${responseTimes.filter((t) => t > 1500).length} pages`);
     console.log();
   }
+
+  // Actionable summary
+  printActionableSummary(summary);
+}
+
+const issueRecommendations: Record<string, { priority: string; fix: string }> = {
+  'title-missing':            { priority: 'CRITICAL', fix: 'Add a unique <title> tag (30-60 chars) to each page' },
+  'title-too-long':           { priority: 'HIGH', fix: 'Shorten titles to under 60 chars so they don\'t get truncated in SERPs' },
+  'title-too-short':          { priority: 'MEDIUM', fix: 'Expand titles to at least 30 chars to improve CTR in search results' },
+  'meta-description-missing': { priority: 'CRITICAL', fix: 'Add a meta description (70-160 chars) — Google uses it as the SERP snippet' },
+  'meta-description-too-long':{ priority: 'HIGH', fix: 'Trim meta descriptions to 160 chars max — longer text gets cut off in SERPs' },
+  'meta-description-too-short':{ priority: 'MEDIUM', fix: 'Expand meta descriptions to at least 70 chars for better SERP presence' },
+  'h1-missing':               { priority: 'CRITICAL', fix: 'Add a single H1 tag — it\'s the main signal for page topic to search engines' },
+  'h1-multiple':              { priority: 'MEDIUM', fix: 'Keep only one H1 per page — use H2-H6 for subsections' },
+  'h1-empty':                 { priority: 'HIGH', fix: 'Add text content to empty H1 tags' },
+  'canonical-missing':        { priority: 'HIGH', fix: 'Add <link rel="canonical"> to prevent duplicate content issues' },
+  'canonical-mismatch':       { priority: 'HIGH', fix: 'Canonical URL should match the page URL, or intentionally point to the preferred version' },
+  'canonical-different-domain':{ priority: 'HIGH', fix: 'Canonical pointing to another domain transfers all SEO value away from this page' },
+  'img-missing-alt':          { priority: 'HIGH', fix: 'Add descriptive alt attributes to images for accessibility and image search' },
+  'heading-skip':             { priority: 'MEDIUM', fix: 'Fix heading hierarchy (H1→H2→H3...) — don\'t skip levels' },
+  'empty-links':              { priority: 'MEDIUM', fix: 'Replace empty href="#" links with real URLs or buttons' },
+  'noindex-in-sitemap':       { priority: 'CRITICAL', fix: 'Remove noindex pages from sitemap, or remove the noindex directive if the page should be indexed' },
+  'x-robots-noindex':         { priority: 'CRITICAL', fix: 'X-Robots-Tag header is blocking indexing — remove the header or take the URL out of the sitemap' },
+  'blocked-by-robots-txt':    { priority: 'CRITICAL', fix: 'URL is disallowed in robots.txt but appears in sitemap — fix the conflict' },
+  'nofollow-detected':        { priority: 'HIGH', fix: 'Remove nofollow if internal links should pass equity — usually only needed for user-generated content' },
+  'thin-content':             { priority: 'HIGH', fix: 'Add more valuable content (300+ words) — thin pages are unlikely to rank' },
+  'low-text-ratio':           { priority: 'MEDIUM', fix: 'Increase text content relative to HTML — reduce boilerplate, inline styles, and unnecessary markup' },
+  'mixed-content':            { priority: 'HIGH', fix: 'Change all HTTP resource URLs to HTTPS to avoid browser security warnings' },
+  'redirect-chain':           { priority: 'HIGH', fix: 'Reduce redirect hops to 1 max — each hop loses link equity and slows page load' },
+  'redirect':                 { priority: 'MEDIUM', fix: 'Update sitemap to use the final destination URL instead of the redirect source' },
+  'url-too-long':             { priority: 'MEDIUM', fix: 'Shorten URL to under 200 chars — shorter URLs are easier to share and may rank better' },
+  'url-uppercase':            { priority: 'MEDIUM', fix: 'Use lowercase URLs only — uppercase can cause duplicate content issues' },
+  'url-underscores':          { priority: 'LOW', fix: 'Google recommends hyphens over underscores in URLs for word separation' },
+  'url-double-slash':         { priority: 'MEDIUM', fix: 'Remove double slashes from URL path — they can cause crawl issues' },
+  'og-title-missing':         { priority: 'MEDIUM', fix: 'Add og:title for better social media link previews' },
+  'og-description-missing':   { priority: 'MEDIUM', fix: 'Add og:description for better social media link previews' },
+  'og-image-missing':         { priority: 'MEDIUM', fix: 'Add og:image — links shared on social media without an image get much less engagement' },
+  'favicon-missing':          { priority: 'LOW', fix: 'Add a favicon — it appears in browser tabs and search results, improving brand visibility' },
+  'viewport-missing':         { priority: 'CRITICAL', fix: 'Add <meta name="viewport"> — without it, mobile users see a broken layout and Google penalizes mobile ranking' },
+  'lang-missing':             { priority: 'MEDIUM', fix: 'Add lang attribute to <html> tag for accessibility and search engine language detection' },
+  'structured-data-missing':  { priority: 'LOW', fix: 'Add JSON-LD structured data for rich snippets in search results (stars, FAQs, breadcrumbs, etc.)' },
+  'structured-data-invalid':  { priority: 'HIGH', fix: 'Fix invalid JSON-LD — broken structured data is worse than none' },
+  'duplicate-title':          { priority: 'HIGH', fix: 'Make each page title unique — duplicate titles confuse search engines about which page to rank' },
+  'duplicate-meta-description':{ priority: 'MEDIUM', fix: 'Write unique meta descriptions per page — duplicates reduce SERP click-through rate' },
+  'duplicate-h1':             { priority: 'MEDIUM', fix: 'Make each page H1 unique to clearly differentiate page topics' },
+  'hreflang-no-x-default':   { priority: 'MEDIUM', fix: 'Add hreflang="x-default" to specify the fallback page for unmatched languages' },
+  'hreflang-no-self-reference':{ priority: 'MEDIUM', fix: 'Add a self-referencing hreflang tag — Google requires it for proper international targeting' },
+  'orphan-page':              { priority: 'HIGH', fix: 'Add internal links from other pages to this URL — orphan pages are hard for Google to discover and rank' },
+  'broken-internal-link':     { priority: 'CRITICAL', fix: 'Fix or remove links pointing to broken pages (4xx/5xx) — they waste crawl budget and break user experience' },
+  'nofollow-internal-link':   { priority: 'HIGH', fix: 'Remove rel="nofollow" from internal links — it wastes PageRank that should flow within your site' },
+  'generic-anchor-text':      { priority: 'MEDIUM', fix: 'Replace generic anchors ("click here", "read more") with descriptive text containing keywords' },
+  'keyword-cannibalization':  { priority: 'HIGH', fix: 'Consolidate pages targeting the same keywords — merge content or differentiate titles/topics clearly' },
+  'non-indexable-in-sitemap': { priority: 'HIGH', fix: 'Remove non-indexable URLs from sitemap — they waste crawl budget' },
+  'low-inbound-links':        { priority: 'LOW', fix: 'Add more internal links to this page from related content to boost its authority' },
+  'meta-refresh-redirect':    { priority: 'HIGH', fix: 'Replace meta refresh with a proper 301 redirect — meta refreshes are bad for SEO and user experience' },
+  'dom-too-large':            { priority: 'HIGH', fix: 'Reduce DOM size below 1500 nodes — large DOMs slow rendering and hurt Core Web Vitals (LCP, INP)' },
+  'dom-large':                { priority: 'MEDIUM', fix: 'Consider reducing DOM size — large DOMs can slow rendering and affect Core Web Vitals' },
+  'http-error':               { priority: 'CRITICAL', fix: 'Fix or remove URLs returning 4xx/5xx errors from the sitemap' },
+  'slow-response':            { priority: 'HIGH', fix: 'Page takes over 3s to respond — optimize server response time, caching, or infrastructure' },
+  'moderate-response':        { priority: 'MEDIUM', fix: 'Page takes over 1.5s — consider server-side caching or CDN' },
+  'page-too-large':           { priority: 'HIGH', fix: 'Page exceeds 3MB — reduce HTML size by removing inline assets, compressing content' },
+  'twitter-card-missing':     { priority: 'LOW', fix: 'Add twitter:card meta tag for better Twitter/X link previews' },
+};
+
+function printActionableSummary(summary: CrawlSummary): void {
+  const sortedIssues = Object.entries(summary.issuesByType).sort((a, b) => b[1] - a[1]);
+  if (sortedIssues.length === 0) return;
+
+  console.log(chalk.bold('═══════════════════════════════════════════════'));
+  console.log(chalk.bold('  ACTIONABLE SUMMARY'));
+  console.log(chalk.bold('═══════════════════════════════════════════════') + '\n');
+
+  const priorityOrder = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+  const priorityColor: Record<string, (s: string) => string> = {
+    CRITICAL: chalk.bgRed.white.bold,
+    HIGH: chalk.red.bold,
+    MEDIUM: chalk.yellow,
+    LOW: chalk.blue,
+  };
+
+  // Group issues by priority
+  const grouped = new Map<string, { type: string; count: number; fix: string }[]>();
+  for (const p of priorityOrder) grouped.set(p, []);
+
+  for (const [type, count] of sortedIssues) {
+    const rec = issueRecommendations[type];
+    const priority = rec?.priority || 'MEDIUM';
+    const fix = rec?.fix || 'Review and fix this issue';
+    grouped.get(priority)!.push({ type, count, fix });
+  }
+
+  let rank = 1;
+  for (const priority of priorityOrder) {
+    const items = grouped.get(priority)!;
+    if (items.length === 0) continue;
+
+    console.log(priorityColor[priority](`  [${priority}]`));
+    for (const item of items) {
+      const pct = ((item.count / summary.totalUrls) * 100).toFixed(0);
+      console.log(`  ${chalk.gray(`${rank}.`)} ${chalk.bold(item.type)} — ${item.count} pages (${pct}%)`);
+      console.log(`     ${chalk.dim('→')} ${item.fix}`);
+      rank++;
+    }
+    console.log();
+  }
+
+  // Final score
+  const pagesWithNoErrors = summary.pages.filter(
+    (p) => p.issues.filter((i) => i.severity === 'error').length === 0,
+  ).length;
+  const healthScore = Math.round((pagesWithNoErrors / summary.totalUrls) * 100);
+  const scoreColor = healthScore >= 90 ? chalk.green : healthScore >= 70 ? chalk.yellow : chalk.red;
+  console.log(chalk.bold('SEO Health Score: ') + scoreColor.bold(`${healthScore}%`) + chalk.gray(` (${pagesWithNoErrors}/${summary.totalUrls} pages with no errors)`));
+  console.log();
 }
 
 export function exportCsv(summary: CrawlSummary, outputPath: string): void {
   const headers = [
     'URL', 'Final URL', 'Status', 'Response Time (ms)', 'Size (KB)',
-    'Word Count', 'Text/HTML Ratio (%)',
+    'Word Count', 'Text/HTML Ratio (%)', 'Indexable', 'Indexability Reason',
     'Severity', 'Issue Type', 'Issue Description',
-    'Title', 'Meta Description', 'H1', 'Canonical',
+    'Title', 'Meta Description', 'H1', 'Canonical', 'Internal Links Out',
   ];
   const rows: string[][] = [];
 
@@ -126,12 +254,15 @@ export function exportCsv(summary: CrawlSummary, outputPath: string): void {
       (page.contentLength / 1024).toFixed(1),
       String(page.wordCount),
       page.contentToHtmlRatio.toFixed(1),
+      page.indexability,
+      csvEscape(page.indexabilityReason || ''),
     ];
     const metaFields = [
       csvEscape(page.title || ''),
       csvEscape(page.metaDescription || ''),
       csvEscape(page.h1s.join(' | ')),
       csvEscape(page.canonical || ''),
+      String(page.internalLinks.length),
     ];
 
     if (page.issues.length === 0) {
@@ -147,6 +278,12 @@ export function exportCsv(summary: CrawlSummary, outputPath: string): void {
   const resolved = path.resolve(outputPath);
   fs.writeFileSync(resolved, csv, 'utf-8');
   console.log(chalk.green(`CSV report saved to ${resolved}`));
+}
+
+export function exportJson(summary: CrawlSummary, outputPath: string): void {
+  const resolved = path.resolve(outputPath);
+  fs.writeFileSync(resolved, JSON.stringify(summary, null, 2), 'utf-8');
+  console.log(chalk.green(`JSON report saved to ${resolved}`));
 }
 
 export function exportHtml(summary: CrawlSummary, outputPath: string): void {

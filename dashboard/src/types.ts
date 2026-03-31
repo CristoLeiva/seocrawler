@@ -35,26 +35,6 @@ export interface PageResult {
   issues: SeoIssue[];
 }
 
-export interface CrawlOptions {
-  concurrency: number;
-  timeout: number;
-  userAgent: string;
-  checkExternalLinks: boolean;
-  output?: string;
-}
-
-export interface SitemapEntry {
-  loc: string;
-  lastmod?: string;
-  changefreq?: string;
-  priority?: string;
-}
-
-export interface RobotsTxt {
-  disallowedPaths: string[];
-  raw: string;
-}
-
 export interface CrawlSummary {
   totalUrls: number;
   crawledUrls: number;
@@ -63,7 +43,7 @@ export interface CrawlSummary {
   warnings: number;
   infos: number;
   issuesByType: Record<string, number>;
-  crossPageIssues: SeoIssue[];
+  crossPageIssues?: SeoIssue[];
   pages: PageResult[];
   duration: number;
 }

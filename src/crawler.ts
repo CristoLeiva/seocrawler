@@ -35,10 +35,21 @@ export async function fetchRobotsTxt(sitemapUrl: string, userAgent: string): Pro
   }
 }
 
+export interface CrawlProgress {
+  completed: number;
+  total: number;
+  url: string;
+  statusCode: number;
+  issues: number;
+  errors: number;
+  responseTime: number;
+}
+
 export async function crawlPages(
   entries: SitemapEntry[],
   options: CrawlOptions,
   robotsTxt?: RobotsTxt,
+  onProgress?: (progress: CrawlProgress) => void,
 ): Promise<PageResult[]> {
   const results: PageResult[] = [];
   let completed = 0;
@@ -77,10 +88,17 @@ export async function crawlPages(
           `  ${chalk.gray(`[${completed}/${total}]`)} ${statusIcon} ${truncate(page.url, 70)} - ${issueText} ${chalk.gray(`(${page.responseTime}ms`)})`
         );
         results.push(page);
+
+        if (onProgress) {
+          onProgress({ completed, total, url: page.url, statusCode: page.statusCode, issues: issueCount, errors: errorCount, responseTime: page.responseTime });
+        }
       } else {
         console.log(
           `  ${chalk.gray(`[${completed}/${total}]`)} ${chalk.red('[ERR]')} ${truncate(batch[batchResults.indexOf(result)]?.loc || 'unknown', 70)} - ${result.reason}`,
         );
+        if (onProgress) {
+          onProgress({ completed, total, url: batch[batchResults.indexOf(result)]?.loc || 'unknown', statusCode: 0, issues: 1, errors: 1, responseTime: 0 });
+        }
       }
     }
   }
@@ -145,6 +163,10 @@ async function crawlSinglePage(url: string, options: CrawlOptions, robotsTxt?: R
         canonical: null,
         h1s: [],
         xRobotsTag,
+        internalLinks: [],
+        internalLinkDetails: [],
+        indexability: 'non-indexable',
+        indexabilityReason: `HTTP ${response.status}`,
         issues: [
           {
             type: 'http-error',
@@ -173,6 +195,10 @@ async function crawlSinglePage(url: string, options: CrawlOptions, robotsTxt?: R
       canonical: null,
       h1s: [],
       xRobotsTag: null,
+      internalLinks: [],
+      internalLinkDetails: [],
+      indexability: 'non-indexable',
+      indexabilityReason: 'fetch error',
       issues: [
         {
           type: 'fetch-error',

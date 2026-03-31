@@ -1,5 +1,5 @@
 import * as cheerio from 'cheerio';
-import { SeoIssue, PageResult, RobotsTxt } from './types';
+import { SeoIssue, PageResult, RobotsTxt, InternalLinkInfo, IndexabilityStatus } from './types';
 
 interface AnalyzeOptions {
   robotsTxt?: RobotsTxt;
@@ -211,6 +211,20 @@ export function analyzePage(
     issues.push({ type: 'favicon-missing', severity: 'warning', message: 'No favicon link tag found' });
   }
 
+  // --- Meta Refresh Redirect ---
+  const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
+  if (metaRefresh) {
+    issues.push({ type: 'meta-refresh-redirect', severity: 'error', message: `Meta refresh redirect detected: "${metaRefresh}" — use a 301 redirect instead` });
+  }
+
+  // --- DOM Size ---
+  const domNodes = $('*').length;
+  if (domNodes > 3000) {
+    issues.push({ type: 'dom-too-large', severity: 'error', message: `Excessive DOM size: ${domNodes} nodes (recommended: <1500)` });
+  } else if (domNodes > 1500) {
+    issues.push({ type: 'dom-large', severity: 'warning', message: `Large DOM: ${domNodes} nodes (recommended: <1500)` });
+  }
+
   // --- URL Analysis ---
   analyzeUrl(url, issues);
 
@@ -259,16 +273,89 @@ export function analyzePage(
   }
 
   // --- Links ---
+  const pageHost = new URL(url).hostname;
   const links = $('a[href]');
   let emptyLinks = 0;
+  let nofollowInternalCount = 0;
+  let genericAnchorCount = 0;
+  const genericAnchors = ['click here', 'read more', 'learn more', 'here', 'more', 'link', 'this', 'click', 'leer más', 'ver más', 'aquí', 'más información', 'saber más', 'pulsa aquí', 'haz clic'];
+  const internalLinks: string[] = [];
+  const internalLinkDetails: InternalLinkInfo[] = [];
+
   links.each((_, el) => {
     const href = $(el).attr('href')?.trim();
     if (!href || href === '#') {
       emptyLinks++;
+      return;
+    }
+    try {
+      const resolved = new URL(href, url);
+      if (resolved.hostname === pageHost) {
+        resolved.hash = '';
+        const normalized = resolved.href.replace(/\/$/, '');
+        const anchorText = $(el).text().trim();
+        const rel = $(el).attr('rel')?.toLowerCase() || '';
+        const isNofollow = rel.includes('nofollow');
+
+        if (!internalLinks.includes(normalized)) {
+          internalLinks.push(normalized);
+        }
+        internalLinkDetails.push({ href: normalized, anchorText, isNofollow });
+
+        if (isNofollow) nofollowInternalCount++;
+        if (anchorText && genericAnchors.includes(anchorText.toLowerCase())) {
+          genericAnchorCount++;
+        }
+      }
+    } catch {
+      // invalid href, skip
     }
   });
+
   if (emptyLinks > 0) {
     issues.push({ type: 'empty-links', severity: 'warning', message: `${emptyLinks} empty or hash-only link(s)` });
+  }
+  if (nofollowInternalCount > 0) {
+    issues.push({ type: 'nofollow-internal-link', severity: 'warning', message: `${nofollowInternalCount} internal link(s) have rel="nofollow" — wasting PageRank` });
+  }
+  if (genericAnchorCount > 0) {
+    issues.push({ type: 'generic-anchor-text', severity: 'warning', message: `${genericAnchorCount} internal link(s) use generic anchor text ("click here", "read more", etc.)` });
+  }
+
+  // --- Indexability Verdict ---
+  let indexability: IndexabilityStatus = 'indexable';
+  let indexabilityReason: string | null = null;
+
+  if (statusCode >= 400) {
+    indexability = 'non-indexable';
+    indexabilityReason = `HTTP ${statusCode}`;
+  } else if (robotsMeta.includes('noindex')) {
+    indexability = 'non-indexable';
+    indexabilityReason = 'meta robots noindex';
+  } else if (xRobotsTag?.toLowerCase().includes('noindex')) {
+    indexability = 'non-indexable';
+    indexabilityReason = 'X-Robots-Tag noindex';
+  } else if (canonical) {
+    try {
+      const resolvedCanonical = new URL(canonical, url).href;
+      if (resolvedCanonical !== url && resolvedCanonical !== finalUrl) {
+        indexability = 'non-indexable';
+        indexabilityReason = `canonicalized to ${resolvedCanonical}`;
+      }
+    } catch { /* skip */ }
+  } else if (redirectChain.length > 0) {
+    indexability = 'non-indexable';
+    indexabilityReason = `redirects to ${finalUrl}`;
+  }
+  if (options.robotsTxt) {
+    const urlPath = new URL(url).pathname;
+    for (const disallowed of options.robotsTxt.disallowedPaths) {
+      if (urlPath.startsWith(disallowed)) {
+        indexability = 'non-indexable';
+        indexabilityReason = `blocked by robots.txt: ${disallowed}`;
+        break;
+      }
+    }
   }
 
   return {
@@ -285,6 +372,10 @@ export function analyzePage(
     canonical,
     h1s,
     xRobotsTag,
+    internalLinks,
+    internalLinkDetails,
+    indexability,
+    indexabilityReason,
     issues,
   };
 }
@@ -382,5 +473,153 @@ export function findCrossPageIssues(pages: PageResult[]): SeoIssue[] {
     }
   }
 
+  // --- Orphan Pages (no internal links pointing to them) ---
+  const linkedUrls = new Set<string>();
+  for (const page of pages) {
+    for (const link of page.internalLinks) {
+      linkedUrls.add(link);
+    }
+  }
+
+  const orphanPages: string[] = [];
+  for (const page of pages) {
+    const normalized = page.url.replace(/\/$/, '');
+    const normalizedFinal = page.finalUrl.replace(/\/$/, '');
+    if (!linkedUrls.has(normalized) && !linkedUrls.has(normalizedFinal) && !linkedUrls.has(page.url) && !linkedUrls.has(page.finalUrl)) {
+      orphanPages.push(page.url);
+    }
+  }
+
+  if (orphanPages.length > 0) {
+    issues.push({
+      type: 'orphan-page',
+      severity: 'warning',
+      message: `${orphanPages.length} orphan page(s) — in sitemap but no internal links point to them`,
+    });
+    for (const page of pages) {
+      if (orphanPages.includes(page.url)) {
+        page.issues.push({
+          type: 'orphan-page',
+          severity: 'warning',
+          message: 'No internal links from other crawled pages point to this URL',
+        });
+      }
+    }
+  }
+
+  // --- Broken Internal Links ---
+  // Check if any page links to a crawled URL that returned an error
+  const crawledUrlStatus = new Map<string, number>();
+  for (const page of pages) {
+    crawledUrlStatus.set(page.url.replace(/\/$/, ''), page.statusCode);
+    crawledUrlStatus.set(page.finalUrl.replace(/\/$/, ''), page.statusCode);
+  }
+
+  for (const page of pages) {
+    let brokenCount = 0;
+    const brokenTargets: string[] = [];
+    for (const link of page.internalLinks) {
+      const status = crawledUrlStatus.get(link);
+      if (status !== undefined && (status >= 400 || status === 0)) {
+        brokenCount++;
+        if (brokenTargets.length < 3) brokenTargets.push(link);
+      }
+    }
+    if (brokenCount > 0) {
+      page.issues.push({
+        type: 'broken-internal-link',
+        severity: 'error',
+        message: `${brokenCount} broken internal link(s): ${brokenTargets.join(', ')}${brokenCount > 3 ? ` (+${brokenCount - 3} more)` : ''}`,
+      });
+    }
+  }
+
+  // --- Internal Link Distribution ---
+  const inboundCount = new Map<string, number>();
+  for (const page of pages) {
+    for (const link of page.internalLinks) {
+      inboundCount.set(link, (inboundCount.get(link) || 0) + 1);
+    }
+  }
+
+  for (const page of pages) {
+    const normalized = page.url.replace(/\/$/, '');
+    const count = inboundCount.get(normalized) || inboundCount.get(page.url) || 0;
+    if (count === 0 && !orphanPages.includes(page.url)) {
+      // already handled by orphan detection
+    } else if (count === 1) {
+      page.issues.push({
+        type: 'low-inbound-links',
+        severity: 'info',
+        message: 'Only 1 internal page links to this URL — consider adding more internal links',
+      });
+    }
+  }
+
+  // --- Keyword Cannibalization ---
+  // Detect pages with very similar title keywords competing for the same query
+  const titleWords = new Map<string, { url: string; title: string }[]>();
+  for (const page of pages) {
+    if (!page.title) continue;
+    // Extract meaningful keywords (3+ chars, lowercased, remove common stop words)
+    const key = extractKeyPhrase(page.title);
+    if (!key) continue;
+    const entries = titleWords.get(key) || [];
+    entries.push({ url: page.url, title: page.title });
+    titleWords.set(key, entries);
+  }
+
+  for (const [phrase, entries] of titleWords) {
+    if (entries.length > 1) {
+      issues.push({
+        type: 'keyword-cannibalization',
+        severity: 'warning',
+        message: `${entries.length} pages may compete for "${phrase}": ${entries.slice(0, 3).map((e) => e.url).join(', ')}${entries.length > 3 ? ` (+${entries.length - 3} more)` : ''}`,
+      });
+      for (const entry of entries) {
+        const page = pages.find((p) => p.url === entry.url);
+        page?.issues.push({
+          type: 'keyword-cannibalization',
+          severity: 'warning',
+          message: `May compete with ${entries.length - 1} other page(s) for "${phrase}"`,
+        });
+      }
+    }
+  }
+
+  // --- Indexability Summary ---
+  const nonIndexable = pages.filter((p) => p.indexability === 'non-indexable');
+  if (nonIndexable.length > 0) {
+    issues.push({
+      type: 'non-indexable-in-sitemap',
+      severity: 'warning',
+      message: `${nonIndexable.length} page(s) in sitemap are non-indexable: ${nonIndexable.slice(0, 3).map((p) => `${p.url} (${p.indexabilityReason})`).join(', ')}${nonIndexable.length > 3 ? ` (+${nonIndexable.length - 3} more)` : ''}`,
+    });
+  }
+
   return issues;
+}
+
+const STOP_WORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'shall', 'this', 'that', 'these', 'those', 'it', 'its', 'not', 'no', 'from', 'as', 'how', 'what', 'which', 'who', 'when', 'where', 'why',
+  // Spanish stop words
+  'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'en', 'con', 'por', 'para', 'y', 'o', 'que', 'es', 'su', 'se', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'entre', 'cuando', 'muy', 'sin', 'sobre', 'también', 'me', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'todos', 'uno', 'les', 'ni', 'contra', 'otros', 'ese', 'eso', 'ante', 'ellos', 'tu', 'tus', 'mi', 'mis',
+]);
+
+function extractKeyPhrase(title: string): string {
+  // Remove year patterns like [2026], (2025), brand suffixes after |
+  const cleaned = title
+    .replace(/\[?\d{4}\]?/g, '')
+    .replace(/\|.*$/, '')
+    .replace(/[—–\-:]/g, ' ')
+    .toLowerCase()
+    .trim();
+
+  const words = cleaned
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
+    .slice(0, 5); // Take first 5 meaningful words
+
+  if (words.length < 2) return '';
+  return words.join(' ');
 }

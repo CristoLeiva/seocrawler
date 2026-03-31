@@ -9,7 +9,10 @@
   "scripts": {
     "build": "tsc",
     "start": "ts-node src/index.ts",
-    "crawl": "ts-node src/index.ts"
+    "crawl": "ts-node src/index.ts",
+    "server": "ts-node src/server.ts",
+    "dashboard": "cd dashboard && npx vite --port 3456",
+    "dev": "npx concurrently \"npm run server\" \"npm run dashboard\""
   },
   "keywords": [],
   "author": "",
@@ -18,10 +21,14 @@
     "chalk": "^4.1.2",
     "cheerio": "^1.2.0",
     "commander": "^14.0.3",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "typescript": "^6.0.2",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^25.5.0",
     "@types/xml2js": "^0.4.14",
     "ts-node": "^10.9.2"

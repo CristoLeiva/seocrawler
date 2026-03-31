@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import { fetchSitemap } from './sitemap';
 import { crawlPages, fetchRobotsTxt } from './crawler';
 import { findCrossPageIssues } from './analyzers';
-import { buildSummary, printReport, exportCsv, exportHtml } from './reporter';
+import { buildSummary, printReport, exportCsv, exportHtml, exportJson } from './reporter';
 import { CrawlOptions } from './types';
 
 const program = new Command();
@@ -20,6 +20,7 @@ program
   .option('-u, --user-agent <string>', 'custom user agent', 'SEOCrawler/1.0')
   .option('-o, --output <path>', 'export report to CSV file')
   .option('--html <path>', 'export report to HTML file')
+  .option('--json <path>', 'export report to JSON file (for dashboard)')
   .option('--limit <number>', 'limit the number of URLs to crawl')
   .action(async (sitemapUrl: string, opts) => {
     const options: CrawlOptions = {
@@ -85,6 +86,7 @@ program
 
     // Step 5: Build summary and print report
     const summary = buildSummary(pages, duration);
+    summary.crossPageIssues = crossPageIssues;
     summary.totalIssues += crossPageIssues.length;
     summary.warnings += crossPageIssues.filter((i) => i.severity === 'warning').length;
 
@@ -96,6 +98,9 @@ program
     }
     if (opts.html) {
       exportHtml(summary, opts.html);
+    }
+    if (opts.json) {
+      exportJson(summary, opts.json);
     }
   });
 
