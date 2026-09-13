@@ -40,6 +40,7 @@ export interface CrawlOptions {
   timeout: number;
   userAgent: string;
   checkExternalLinks: boolean;
+  allowPrivateNetworks?: boolean;
   output?: string;
 }
 

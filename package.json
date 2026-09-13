@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test tests/*.test.js",
     "start": "ts-node src/index.ts",
     "crawl": "ts-node src/index.ts",
     "server": "ts-node src/server.ts",
@@ -24,6 +25,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "typescript": "^6.0.2",
+    "undici": "^7.29.1",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
